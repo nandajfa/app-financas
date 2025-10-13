@@ -59,7 +59,7 @@ CREATE POLICY "Users can view own roles"
   USING (auth.uid() = user_id);
 
 -- Criar tabela de transações
-CREATE TABLE public.transacoes (
+CREATE TABLE IF NOT EXISTS public.transacoes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   quando TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -114,7 +114,7 @@ CREATE TRIGGER on_auth_user_created
   EXECUTE FUNCTION public.handle_new_user();
 
 -- Criar índices para performance
-CREATE INDEX idx_transacoes_user_id ON public.transacoes(user_id);
-CREATE INDEX idx_transacoes_quando ON public.transacoes(quando);
-CREATE INDEX idx_transacoes_tipo ON public.transacoes(tipo);
-CREATE INDEX idx_transacoes_categoria ON public.transacoes(categoria);
+CREATE INDEX IF NOT EXISTS idx_transacoes_user_id ON public.transacoes(user_id);
+CREATE INDEX IF NOT EXISTS idx_transacoes_quando ON public.transacoes(quando);
+CREATE INDEX IF NOT EXISTS idx_transacoes_tipo ON public.transacoes(tipo);
+CREATE INDEX IF NOT EXISTS idx_transacoes_categoria ON public.transacoes(categoria);

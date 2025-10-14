@@ -110,7 +110,13 @@ BEGIN
     BEGIN
       ALTER TABLE public.transacoes
         ALTER COLUMN user_id TYPE UUID
-        USING NULLIF(user_id::text, '')::uuid;
+        USING (
+          CASE
+            WHEN NULLIF(TRIM(user_id::text), '') IS NULL THEN NULL
+            WHEN user_id::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (user_id::text)::uuid
+            ELSE NULL
+          END
+        );
     EXCEPTION
       WHEN others THEN
         RAISE EXCEPTION 'Não foi possível converter a coluna user_id para UUID. Verifique os dados existentes antes de executar a migração.';

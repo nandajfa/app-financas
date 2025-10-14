@@ -71,6 +71,82 @@ CREATE TABLE IF NOT EXISTS public.transacoes (
   categoria TEXT NOT NULL
 );
 
+-- Garantir compatibilidade com tabelas existentes que possam usar "user" ao invés de "user_id"
+DO $$
+DECLARE
+  v_col_type TEXT;
+BEGIN
+  -- Adiciona ou renomeia a coluna para garantir que "user_id" exista
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'transacoes'
+      AND column_name = 'user_id'
+  ) THEN
+    IF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'transacoes'
+        AND column_name = 'user'
+    ) THEN
+      ALTER TABLE public.transacoes RENAME COLUMN "user" TO user_id;
+    ELSE
+      ALTER TABLE public.transacoes ADD COLUMN user_id UUID;
+    END IF;
+  END IF;
+
+  -- Converte a coluna para UUID caso ainda não esteja nesse formato
+  SELECT data_type
+    INTO v_col_type
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND table_name = 'transacoes'
+    AND column_name = 'user_id'
+  LIMIT 1;
+
+  IF v_col_type IS NOT NULL AND v_col_type <> 'uuid' THEN
+    BEGIN
+      ALTER TABLE public.transacoes
+        ALTER COLUMN user_id TYPE UUID
+        USING NULLIF(user_id::text, '')::uuid;
+    EXCEPTION
+      WHEN others THEN
+        RAISE EXCEPTION 'Não foi possível converter a coluna user_id para UUID. Verifique os dados existentes antes de executar a migração.';
+    END;
+  END IF;
+
+  -- Garante a restrição de chave estrangeira apenas se ainda não existir
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'transacoes_user_id_fkey'
+      AND conrelid = 'public.transacoes'::regclass
+  ) THEN
+    ALTER TABLE public.transacoes
+      ADD CONSTRAINT transacoes_user_id_fkey
+      FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
+  END IF;
+
+  -- Define NOT NULL somente quando todos os registros estiverem preenchidos
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'transacoes'
+      AND column_name = 'user_id'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM public.transacoes
+    WHERE user_id IS NULL
+  ) THEN
+    ALTER TABLE public.transacoes
+      ALTER COLUMN user_id SET NOT NULL;
+  END IF;
+END $$;
+
 ALTER TABLE public.transacoes ENABLE ROW LEVEL SECURITY;
 
 -- Políticas para transações (apenas admins podem ver todas)

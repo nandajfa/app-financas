@@ -44,3 +44,19 @@ This project is built with:
 - React
 - shadcn-ui
 - Tailwind CSS
+
+## Running database migrations
+
+All database schema changes live in `supabase/migrations/`. To apply them from the project directory in any POSIX shell (including `zsh`), run:
+
+```sh
+npm run db:push
+```
+
+This script executes `npx supabase@latest db push` under the hood, which will download the Supabase CLI if it is not already installed and then apply all pending migrations to the project linked in your `supabase/config.toml`. If you prefer to use a globally installed CLI, you can run the equivalent command directly:
+
+```sh
+supabase db push
+```
+
+Both commands must be executed from the project root so the Supabase configuration can be located.

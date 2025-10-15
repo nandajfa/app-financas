@@ -4,16 +4,17 @@ import { supabase } from "@/integrations/supabase/client";
 import { User } from "@supabase/supabase-js";
 import { useToast } from "@/hooks/use-toast";
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
-import StatsCards from "@/components/dashboard/StatsCards";
+// import StatsCards from "@/components/dashboard/StatsCards";
 import TransactionsList from "@/components/dashboard/TransactionsList";
 import CategoryChart from "@/components/dashboard/CategoryChart";
+import MonthlySummary from "@/components/dashboard/MonthlySummary";
 import { Loader2 } from "lucide-react";
 
 export interface Transaction {
   id: string;
   created_at: string;
   quando: string;
-  user_id: string;
+  user: string;
   estabelecimento: string;
   valor: number;
   detalhes: string | null;
@@ -36,7 +37,7 @@ const Dashboard = () => {
   const checkAuth = async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      
+
       if (!session) {
         navigate("/auth");
         return;
@@ -101,11 +102,24 @@ const Dashboard = () => {
     try {
       const { data, error } = await supabase
         .from("transacoes")
-        .select("*")
+        .select("id, created_at, quando, user, estabelecimento, valor, detalhes, tipo, categoria")
         .order("quando", { ascending: false });
 
       if (error) throw error;
-      setTransactions(data || []);
+
+      const normalized: Transaction[] = (data ?? []).map((t: any) => ({
+        id: t.id,
+        created_at: t.created_at ?? null,
+        quando: t.quando,
+        user: t.user,
+        estabelecimento: (t.estabelecimento ?? "").trim() || "—",
+        valor: typeof t.valor === "number" ? t.valor : Number(t.valor ?? 0),
+        detalhes: t.detalhes ?? null,
+        tipo: t.tipo === "receita" ? "receita" : "despesa",
+        categoria: (t.categoria ?? "").trim() || "Sem categoria",
+      }));
+
+      setTransactions(normalized);
     } catch (error: any) {
       console.error("Error fetching transactions:", error);
       toast({
@@ -136,18 +150,20 @@ const Dashboard = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-accent/10">
       <DashboardHeader user={user} onSignOut={handleSignOut} />
-      
+
       <main className="container mx-auto px-4 py-8 space-y-8">
-        <StatsCards transactions={transactions} />
-        
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2">
-            <TransactionsList transactions={transactions} />
-          </div>
-          <div className="lg:col-span-1">
-            <CategoryChart transactions={transactions} />
-          </div>
-        </div>
+        {/* <StatsCards transactions={transactions} /> */}
+
+        <MonthlySummary transactions={transactions} />
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+  <div className="lg:col-span-2">
+    <TransactionsList transactions={transactions} />
+  </div>
+  <div className="lg:col-span-1 self-start">
+    <CategoryChart transactions={transactions} />
+  </div>
+</div>
       </main>
     </div>
   );

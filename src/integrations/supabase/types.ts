@@ -12,62 +12,69 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "13.0.5"
   }
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
   public: {
     Tables: {
-      profiles: {
-        Row: {
-          created_at: string | null
-          email: string | null
-          full_name: string | null
-          id: string
-        }
-        Insert: {
-          created_at?: string | null
-          email?: string | null
-          full_name?: string | null
-          id: string
-        }
-        Update: {
-          created_at?: string | null
-          email?: string | null
-          full_name?: string | null
-          id?: string
-        }
-        Relationships: []
-      }
       transacoes: {
         Row: {
-          categoria: string
-          created_at: string | null
+          categoria: string | null
+          created_at: string
           detalhes: string | null
-          estabelecimento: string
+          estabelecimento: string | null
           id: string
+          phone_e164: string | null
           quando: string
-          tipo: Database["public"]["Enums"]["transaction_type"]
-          user_id: string
-          valor: number
+          tipo: string | null
+          user: string
+          valor: number | null
         }
         Insert: {
-          categoria: string
-          created_at?: string | null
+          categoria?: string | null
+          created_at?: string
           detalhes?: string | null
-          estabelecimento: string
+          estabelecimento?: string | null
           id?: string
+          phone_e164?: string | null
           quando: string
-          tipo: Database["public"]["Enums"]["transaction_type"]
-          user_id: string
-          valor: number
+          tipo?: string | null
+          user: string
+          valor?: number | null
         }
         Update: {
-          categoria?: string
-          created_at?: string | null
+          categoria?: string | null
+          created_at?: string
           detalhes?: string | null
-          estabelecimento?: string
+          estabelecimento?: string | null
           id?: string
+          phone_e164?: string | null
           quando?: string
-          tipo?: Database["public"]["Enums"]["transaction_type"]
-          user_id?: string
-          valor?: number
+          tipo?: string | null
+          user?: string
+          valor?: number | null
         }
         Relationships: []
       }
@@ -92,11 +99,33 @@ export type Database = {
         }
         Relationships: []
       }
+      whatsapp_links: {
+        Row: {
+          created_at: string | null
+          user_id: string
+          whatsapp_jid: string
+        }
+        Insert: {
+          created_at?: string | null
+          user_id: string
+          whatsapp_jid: string
+        }
+        Update: {
+          created_at?: string | null
+          user_id?: string
+          whatsapp_jid?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
+      can_access_transacao: {
+        Args: { _jid: string; _uid: string }
+        Returns: boolean
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -107,7 +136,6 @@ export type Database = {
     }
     Enums: {
       app_role: "admin" | "user"
-      transaction_type: "receita" | "despesa"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -233,10 +261,12 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {
       app_role: ["admin", "user"],
-      transaction_type: ["receita", "despesa"],
     },
   },
 } as const

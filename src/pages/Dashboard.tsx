@@ -86,7 +86,6 @@ const Dashboard = () => {
   const [editTransaction, setEditTransaction] = useState<Transaction | null>(null);
   const [userIdentifier, setUserIdentifier] = useState<string | null>(null);
   const [userPhoneE164, setUserPhoneE164] = useState<string | null>(null);
-  const [identifierField, setIdentifierField] = useState<"user" | "user_id">("user");
   const [isAdmin, setIsAdmin] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const navigate = useNavigate();
@@ -106,14 +105,14 @@ const Dashboard = () => {
   }), []);
 
   const fetchTransactions = useCallback(
-    async (identifier: string, field: "user" | "user_id") => {
+    async (identifier: string) => {
       try {
         const { data, error } = await supabase
           .from("transacoes")
           .select(
-            "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+            "id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
           )
-          .eq(field, identifier)
+          .eq("user", identifier)
           .order("quando", { ascending: false });
 
         if (error) throw error;
@@ -132,7 +131,7 @@ const Dashboard = () => {
     [normalizeTransaction, toast]
   );
 
-  const resolveAdminIdentifier = useCallback(
+  const resolveUserIdentifier = useCallback(
     async (currentUser: User) => {
       const { data, error } = await supabase
         .from("whatsapp_links")
@@ -181,20 +180,10 @@ const Dashboard = () => {
       const userIsAdmin = await fetchIsAdmin(currentUser);
       setIsAdmin(userIsAdmin);
 
-      if (userIsAdmin) {
-        setIdentifierField("user");
-        const identifier = await resolveAdminIdentifier(currentUser);
-        await fetchTransactions(identifier, "user");
-        return;
-      }
-
-      const identifier = currentUser.id;
-      setIdentifierField("user_id");
-      setUserIdentifier(identifier);
-      setUserPhoneE164(null);
-      await fetchTransactions(identifier, "user_id");
+      const identifier = await resolveUserIdentifier(currentUser);
+      await fetchTransactions(identifier);
     },
-    [fetchIsAdmin, fetchTransactions, resolveAdminIdentifier]
+    [fetchIsAdmin, fetchTransactions, resolveUserIdentifier]
   );
 
   const checkAuth = useCallback(async () => {
@@ -217,7 +206,6 @@ const Dashboard = () => {
             setTransactions([]);
             setUserIdentifier(null);
             setUserPhoneE164(null);
-            setIdentifierField("user");
             setIsAdmin(false);
             navigate("/auth");
             return;
@@ -252,7 +240,6 @@ const Dashboard = () => {
         setTransactions([]);
         setUserIdentifier(null);
         setUserPhoneE164(null);
-        setIdentifierField("user");
       } else {
         navigate("/auth");
       }
@@ -285,7 +272,7 @@ const Dashboard = () => {
       return;
     }
 
-    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    const identifierValue = userIdentifier;
     if (!identifierValue) {
       toast({
         variant: "destructive",
@@ -317,21 +304,16 @@ const Dashboard = () => {
         detalhes: values.detalhes.trim() ? values.detalhes.trim() : null,
       };
 
-      if (identifierField === "user") {
-        payload.user = identifierValue;
-        payload.user_id = user.id;
-        if (userPhoneE164) {
-          payload.phone_e164 = userPhoneE164;
-        }
-      } else {
-        payload.user_id = identifierValue;
+      payload.user = identifierValue;
+      if (userPhoneE164) {
+        payload.phone_e164 = userPhoneE164;
       }
 
       const { data, error } = await supabase
         .from("transacoes")
         .insert([payload])
         .select(
-          "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+          "id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
         )
         .single();
 
@@ -367,7 +349,7 @@ const Dashboard = () => {
       return;
     }
 
-    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    const identifierValue = userIdentifier;
     if (!identifierValue) {
       toast({
         variant: "destructive",
@@ -403,9 +385,9 @@ const Dashboard = () => {
         .from("transacoes")
         .update(payload)
         .eq("id", editTransaction.id)
-        .eq(identifierField, identifierValue)
+        .eq("user", identifierValue)
         .select(
-          "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+          "id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
         )
         .single();
 
@@ -446,7 +428,7 @@ const Dashboard = () => {
       return;
     }
 
-    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    const identifierValue = userIdentifier;
     if (!identifierValue) {
       toast({
         variant: "destructive",
@@ -466,7 +448,7 @@ const Dashboard = () => {
         .from("transacoes")
         .delete()
         .eq("id", transaction.id)
-        .eq(identifierField, identifierValue);
+        .eq("user", identifierValue);
 
       if (error) throw error;
 
@@ -590,7 +572,7 @@ const Dashboard = () => {
       return;
     }
 
-    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    const identifierValue = userIdentifier;
     if (!identifierValue) {
       toast({
         variant: "destructive",
@@ -624,7 +606,7 @@ const Dashboard = () => {
       const { error } = await supabase
         .from("transacoes")
         .delete()
-        .eq(identifierField, identifierValue)
+        .eq("user", identifierValue)
         .gte("quando", start.toISOString())
         .lt("quando", endExclusive.toISOString());
 

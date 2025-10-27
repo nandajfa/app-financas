@@ -2,13 +2,17 @@ import { Transaction } from "@/pages/Dashboard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowDownRight, ArrowUpRight, Calendar } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ArrowDownRight, ArrowUpRight, Calendar, Loader2, Pencil, Trash2 } from "lucide-react";
 // (mantém date-fns se quiser, mas vamos proteger antes de chamar)
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 interface TransactionsListProps {
   transactions: Transaction[] | undefined | null;
+  onEdit?: (transaction: Transaction) => void;
+  onDelete?: (transaction: Transaction) => void;
+  deletingId?: string | null;
 }
 
 /** Parser ultrarrobusto: aceita ISO, epoch ms/s, números/strings; retorna Date válido ou null */
@@ -54,7 +58,7 @@ function safeFormatDate(input: unknown): string {
   }
 }
 
-const TransactionsList = ({ transactions }: TransactionsListProps) => {
+const TransactionsList = ({ transactions, onEdit, onDelete, deletingId }: TransactionsListProps) => {
   const formatCurrency = (value: unknown) => {
     const n = typeof value === "number" ? value : Number(value);
     const safe = Number.isFinite(n) ? n : 0;
@@ -65,14 +69,14 @@ const TransactionsList = ({ transactions }: TransactionsListProps) => {
   };
 
   // Normaliza os dados ANTES de renderizar (evita estourar dentro do JSX)
-  const rows = Array.isArray(transactions) ? transactions : [];
+  const rows: Transaction[] = Array.isArray(transactions) ? transactions : [];
 
   // (debug opcional) loga linhas com data inválida para você corrigir na origem
   for (const tx of rows) {
-    const d = parseQuando((tx as any).quando);
+    const d = parseQuando(tx.quando);
     if (!d) {
       // eslint-disable-next-line no-console
-      console.warn("[Transações] 'quando' inválido:", (tx as any).quando, " em id=", (tx as any).id);
+      console.warn("[Transações] 'quando' inválido:", tx.quando, " em id=", tx.id);
     }
   }
 
@@ -90,11 +94,12 @@ const TransactionsList = ({ transactions }: TransactionsListProps) => {
               </div>
             ) : (
               rows.map((transaction) => {
-                const valorAbs = Math.abs(Number((transaction as any).valor));
-                const isReceita = (transaction as any).tipo === "receita";
+                const valorAbs = Math.abs(Number(transaction.valor));
+                const isReceita = transaction.tipo === "receita";
+                const isDeleting = deletingId === transaction.id;
                 return (
                   <div
-                    key={(transaction as any).id}
+                    key={transaction.id}
                     className="flex items-start gap-4 p-4 rounded-lg border border-border hover:shadow-card transition-shadow duration-200"
                   >
                     <div
@@ -111,17 +116,17 @@ const TransactionsList = ({ transactions }: TransactionsListProps) => {
                       <div className="flex items-start justify-between">
                         <div>
                           <h4 className="font-semibold text-foreground">
-                            {(transaction as any).estabelecimento ?? "—"}
+                            {(transaction.estabelecimento ?? "").trim() || "—"}
                           </h4>
 
                           <div className="flex items-center gap-4 mt-1">
                             <span className="text-xs text-muted-foreground flex items-center gap-1">
                               <Calendar className="h-3 w-3" />
-                              {safeFormatDate((transaction as any).quando)}
+                              {safeFormatDate(transaction.quando)}
                             </span>
 
                             <Badge variant="outline" className="text-xs">
-                              {(transaction as any).categoria ?? "—"}
+                              {(transaction.categoria ?? "").trim() || "Sem categoria"}
                             </Badge>
                           </div>
                         </div>
@@ -131,12 +136,43 @@ const TransactionsList = ({ transactions }: TransactionsListProps) => {
                             {isReceita ? "+" : "-"}
                             {formatCurrency(valorAbs)}
                           </div>
+                          <div className="flex items-center justify-end gap-2 mt-2">
+                            {onEdit && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => onEdit(transaction)}
+                                title="Editar transação"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            )}
+                            {onDelete && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive"
+                                onClick={() => onDelete(transaction)}
+                                title="Excluir transação"
+                                disabled={isDeleting}
+                              >
+                                {isDeleting ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-4 w-4" />
+                                )}
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </div>
 
-                      {(transaction as any).detalhes && (
+                      {transaction.detalhes && transaction.detalhes.trim() && (
                         <p className="text-sm text-muted-foreground">
-                          {(transaction as any).detalhes}
+                          {transaction.detalhes.trim()}
                         </p>
                       )}
                     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { User } from "@supabase/supabase-js";
@@ -9,6 +9,8 @@ import TransactionsList from "@/components/dashboard/TransactionsList";
 import CategoryChart from "@/components/dashboard/CategoryChart";
 import MonthlySummary from "@/components/dashboard/MonthlySummary";
 import { Loader2 } from "lucide-react";
+import TransactionForm, { TransactionFormValues } from "@/components/dashboard/TransactionForm";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export interface Transaction {
   id: string;
@@ -24,17 +26,54 @@ export interface Transaction {
 
 const Dashboard = () => {
   const [user, setUser] = useState<User | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [createLoading, setCreateLoading] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [editTransaction, setEditTransaction] = useState<Transaction | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  useEffect(() => {
-    checkAuth();
-  }, []);
+  const normalizeTransaction = useCallback((t: any): Transaction => ({
+    id: t.id,
+    created_at: t.created_at ?? new Date().toISOString(),
+    quando: t.quando,
+    user: t.user,
+    estabelecimento: t.estabelecimento ?? "",
+    valor: typeof t.valor === "number" ? t.valor : Number(t.valor ?? 0),
+    detalhes: t.detalhes ?? null,
+    tipo: t.tipo === "receita" ? "receita" : "despesa",
+    categoria: t.categoria ?? "",
+  }), []);
 
-  const checkAuth = async () => {
+  const fetchTransactions = useCallback(
+    async (userId: string) => {
+      try {
+        const { data, error } = await supabase
+          .from("transacoes")
+          .select("id, created_at, quando, user, estabelecimento, valor, detalhes, tipo, categoria")
+          .eq("user", userId)
+          .order("quando", { ascending: false });
+
+        if (error) throw error;
+
+        const normalized: Transaction[] = (data ?? []).map((t: any) => normalizeTransaction(t));
+        setTransactions(normalized);
+      } catch (error: any) {
+        console.error("Error fetching transactions:", error);
+        toast({
+          variant: "destructive",
+          title: "Erro ao carregar transações",
+          description: error.message,
+        });
+      }
+    },
+    [normalizeTransaction, toast]
+  );
+
+  const checkAuth = useCallback(async () => {
+    setLoading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
@@ -44,47 +83,25 @@ const Dashboard = () => {
       }
 
       setUser(session.user);
+      await fetchTransactions(session.user.id);
 
-      // Check if user is admin
-      const { data: roleData, error: roleError } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", session.user.id)
-        .eq("role", "admin")
-        .maybeSingle();
-
-      if (roleError) {
-        console.error("Error checking role:", roleError);
-      }
-
-      const userIsAdmin = !!roleData;
-      setIsAdmin(userIsAdmin);
-
-      if (!userIsAdmin) {
-        toast({
-          variant: "destructive",
-          title: "Acesso negado",
-          description: "Você precisa ser admin para acessar o dashboard.",
-        });
-        await supabase.auth.signOut();
-        navigate("/auth");
-        return;
-      }
-
-      // Fetch transactions
-      await fetchTransactions();
-
-      // Set up auth state listener
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(
-        (event, session) => {
+      const { data: authListener } = supabase.auth.onAuthStateChange(
+        async (event, session) => {
           if (event === "SIGNED_OUT") {
+            setUser(null);
+            setTransactions([]);
             navigate("/auth");
+            return;
           }
-          setUser(session?.user ?? null);
+
+          if (session?.user) {
+            setUser(session.user);
+            await fetchTransactions(session.user.id);
+          }
         }
       );
 
-      return () => subscription.unsubscribe();
+      return () => authListener.subscription.unsubscribe();
     } catch (error: any) {
       console.error("Auth error:", error);
       toast({
@@ -96,37 +113,167 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [fetchTransactions, navigate, toast]);
 
-  const fetchTransactions = async () => {
+  useEffect(() => {
+    const cleanupPromise = checkAuth();
+
+    return () => {
+      cleanupPromise
+        .then((cleanup) => {
+          if (typeof cleanup === "function") {
+            cleanup();
+          }
+        })
+        .catch(() => undefined);
+    };
+  }, [checkAuth]);
+
+  const handleCreateTransaction = async (values: TransactionFormValues) => {
+    if (!user) return;
+
+    const parsedValue = Number(values.valor);
+    if (!Number.isFinite(parsedValue)) {
+      toast({
+        variant: "destructive",
+        title: "Valor inválido",
+        description: "Informe um número válido para o valor.",
+      });
+      return;
+    }
+
+    setCreateLoading(true);
+
     try {
+      const payload = {
+        user: user.id,
+        estabelecimento: values.estabelecimento.trim(),
+        valor: Math.abs(parsedValue),
+        tipo: values.tipo,
+        categoria: values.categoria.trim() || null,
+        quando: values.quando,
+        detalhes: values.detalhes.trim() ? values.detalhes.trim() : null,
+      };
+
       const { data, error } = await supabase
         .from("transacoes")
+        .insert([payload])
         .select("id, created_at, quando, user, estabelecimento, valor, detalhes, tipo, categoria")
-        .order("quando", { ascending: false });
+        .single();
 
       if (error) throw error;
 
-      const normalized: Transaction[] = (data ?? []).map((t: any) => ({
-        id: t.id,
-        created_at: t.created_at ?? null,
-        quando: t.quando,
-        user: t.user,
-        estabelecimento: (t.estabelecimento ?? "").trim() || "—",
-        valor: typeof t.valor === "number" ? t.valor : Number(t.valor ?? 0),
-        detalhes: t.detalhes ?? null,
-        tipo: t.tipo === "receita" ? "receita" : "despesa",
-        categoria: (t.categoria ?? "").trim() || "Sem categoria",
-      }));
+      if (data) {
+        setTransactions((prev) => [normalizeTransaction(data), ...prev]);
+      }
 
-      setTransactions(normalized);
+      toast({
+        title: "Transação adicionada",
+        description: "Registro criado com sucesso.",
+      });
     } catch (error: any) {
-      console.error("Error fetching transactions:", error);
+      console.error("Error creating transaction:", error);
       toast({
         variant: "destructive",
-        title: "Erro ao carregar transações",
+        title: "Erro ao criar transação",
         description: error.message,
       });
+    } finally {
+      setCreateLoading(false);
+    }
+  };
+
+  const handleUpdateTransaction = async (values: TransactionFormValues) => {
+    if (!user || !editTransaction) return;
+
+    const parsedValue = Number(values.valor);
+    if (!Number.isFinite(parsedValue)) {
+      toast({
+        variant: "destructive",
+        title: "Valor inválido",
+        description: "Informe um número válido para o valor.",
+      });
+      return;
+    }
+
+    setEditLoading(true);
+
+    try {
+      const payload = {
+        estabelecimento: values.estabelecimento.trim(),
+        valor: Math.abs(parsedValue),
+        tipo: values.tipo,
+        categoria: values.categoria.trim() || null,
+        quando: values.quando,
+        detalhes: values.detalhes.trim() ? values.detalhes.trim() : null,
+      };
+
+      const { data, error } = await supabase
+        .from("transacoes")
+        .update(payload)
+        .eq("id", editTransaction.id)
+        .eq("user", user.id)
+        .select("id, created_at, quando, user, estabelecimento, valor, detalhes, tipo, categoria")
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        setTransactions((prev) =>
+          prev.map((transaction) =>
+            transaction.id === data.id ? normalizeTransaction(data) : transaction
+          )
+        );
+      }
+
+      toast({
+        title: "Transação atualizada",
+        description: "Registro salvo com sucesso.",
+      });
+      setEditTransaction(null);
+    } catch (error: any) {
+      console.error("Error updating transaction:", error);
+      toast({
+        variant: "destructive",
+        title: "Erro ao atualizar transação",
+        description: error.message,
+      });
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleDeleteTransaction = async (transaction: Transaction) => {
+    if (!user) return;
+
+    const confirmDelete = window.confirm("Deseja realmente excluir esta transação?");
+    if (!confirmDelete) return;
+
+    setDeletingId(transaction.id);
+
+    try {
+      const { error } = await supabase
+        .from("transacoes")
+        .delete()
+        .eq("id", transaction.id)
+        .eq("user", user.id);
+
+      if (error) throw error;
+
+      setTransactions((prev) => prev.filter((item) => item.id !== transaction.id));
+      toast({
+        title: "Transação removida",
+        description: "O registro foi excluído.",
+      });
+    } catch (error: any) {
+      console.error("Error deleting transaction:", error);
+      toast({
+        variant: "destructive",
+        title: "Erro ao excluir",
+        description: error.message,
+      });
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -143,10 +290,6 @@ const Dashboard = () => {
     );
   }
 
-  if (!isAdmin) {
-    return null;
-  }
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-accent/10">
       <DashboardHeader user={user} onSignOut={handleSignOut} />
@@ -156,15 +299,56 @@ const Dashboard = () => {
 
         <MonthlySummary transactions={transactions} />
 
+        <div className="grid grid-cols-1 gap-8">
+          <div className="bg-card border border-border rounded-xl shadow-card p-6">
+            <TransactionForm
+              title="Adicionar transação"
+              submitLabel="Salvar transação"
+              onSubmit={handleCreateTransaction}
+              submitting={createLoading}
+            />
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
   <div className="lg:col-span-2">
-    <TransactionsList transactions={transactions} />
+    <TransactionsList
+      transactions={transactions}
+      onEdit={(transaction) => setEditTransaction(transaction)}
+      onDelete={handleDeleteTransaction}
+      deletingId={deletingId}
+    />
   </div>
   <div className="lg:col-span-1 self-start">
     <CategoryChart transactions={transactions} />
   </div>
 </div>
       </main>
+
+      <Dialog open={!!editTransaction} onOpenChange={(open) => !open && setEditTransaction(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Editar transação</DialogTitle>
+          </DialogHeader>
+          {editTransaction && (
+            <TransactionForm
+              title=""
+              submitLabel="Atualizar transação"
+              initialValues={{
+                estabelecimento: editTransaction.estabelecimento,
+                valor: editTransaction.valor?.toString() ?? "",
+                tipo: editTransaction.tipo,
+                categoria: editTransaction.categoria,
+                quando: editTransaction.quando,
+                detalhes: editTransaction.detalhes ?? "",
+              }}
+              onSubmit={handleUpdateTransaction}
+              onCancel={() => setEditTransaction(null)}
+              submitting={editLoading}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

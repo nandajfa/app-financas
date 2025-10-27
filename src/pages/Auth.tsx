@@ -11,6 +11,7 @@ import { Loader2, TrendingUp } from "lucide-react";
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [isResetPassword, setIsResetPassword] = useState(false);
+  const [isRecoveryFlow, setIsRecoveryFlow] = useState<boolean | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -21,29 +22,39 @@ const Auth = () => {
   const { toast } = useToast();
 
   useEffect(() => {
-    const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        navigate("/dashboard");
-      }
-    };
-    checkUser();
-  }, [navigate]);
-
-  useEffect(() => {
     const hashParams = new URLSearchParams(window.location.hash.substring(1));
     const type = hashParams.get("type");
 
     if (type === "recovery") {
+      setIsRecoveryFlow(true);
       setIsResetPassword(true);
       setIsLogin(false);
-      window.history.replaceState(
-        null,
-        "",
-        `${window.location.pathname}${window.location.search}`
-      );
+      void supabase.auth.initialize().finally(() => {
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${window.location.search}`
+        );
+      });
+    } else {
+      setIsRecoveryFlow(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (isRecoveryFlow === null) {
+      return;
+    }
+
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session && !isRecoveryFlow) {
+        navigate("/dashboard");
+      }
+    };
+
+    void checkUser();
+  }, [navigate, isRecoveryFlow]);
 
   const handlePasswordReset = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,6 +102,7 @@ const Auth = () => {
 
       setIsResetPassword(false);
       setIsLogin(true);
+      setIsRecoveryFlow(false);
       setPassword("");
       setConfirmPassword("");
       navigate("/dashboard");
@@ -255,6 +267,7 @@ const Auth = () => {
                 onClick={() => {
                   setIsResetPassword(false);
                   setIsLogin(true);
+                  setIsRecoveryFlow(false);
                   setPassword("");
                   setConfirmPassword("");
                 }}

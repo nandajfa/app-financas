@@ -86,6 +86,8 @@ const Dashboard = () => {
   const [editTransaction, setEditTransaction] = useState<Transaction | null>(null);
   const [userIdentifier, setUserIdentifier] = useState<string | null>(null);
   const [userPhoneE164, setUserPhoneE164] = useState<string | null>(null);
+  const [identifierField, setIdentifierField] = useState<"user" | "user_id">("user");
+  const [isAdmin, setIsAdmin] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -104,12 +106,14 @@ const Dashboard = () => {
   }), []);
 
   const fetchTransactions = useCallback(
-    async (identifier: string) => {
+    async (identifier: string, field: "user" | "user_id") => {
       try {
         const { data, error } = await supabase
           .from("transacoes")
-          .select("id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria")
-          .eq("user", identifier)
+          .select(
+            "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+          )
+          .eq(field, identifier)
           .order("quando", { ascending: false });
 
         if (error) throw error;
@@ -128,7 +132,7 @@ const Dashboard = () => {
     [normalizeTransaction, toast]
   );
 
-  const resolveUserIdentifier = useCallback(
+  const resolveAdminIdentifier = useCallback(
     async (currentUser: User) => {
       const { data, error } = await supabase
         .from("whatsapp_links")
@@ -159,6 +163,40 @@ const Dashboard = () => {
     []
   );
 
+  const fetchIsAdmin = useCallback(async (currentUser: User) => {
+    const { data, error } = await supabase.rpc("has_role", {
+      _role: "admin",
+      _user_id: currentUser.id,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return Boolean(data);
+  }, []);
+
+  const initializeUserContext = useCallback(
+    async (currentUser: User) => {
+      const userIsAdmin = await fetchIsAdmin(currentUser);
+      setIsAdmin(userIsAdmin);
+
+      if (userIsAdmin) {
+        setIdentifierField("user");
+        const identifier = await resolveAdminIdentifier(currentUser);
+        await fetchTransactions(identifier, "user");
+        return;
+      }
+
+      const identifier = currentUser.id;
+      setIdentifierField("user_id");
+      setUserIdentifier(identifier);
+      setUserPhoneE164(null);
+      await fetchTransactions(identifier, "user_id");
+    },
+    [fetchIsAdmin, fetchTransactions, resolveAdminIdentifier]
+  );
+
   const checkAuth = useCallback(async () => {
     setLoading(true);
     try {
@@ -170,8 +208,7 @@ const Dashboard = () => {
       }
 
       setUser(session.user);
-      const identifier = await resolveUserIdentifier(session.user);
-      await fetchTransactions(identifier);
+      await initializeUserContext(session.user);
 
       const { data: authListener } = supabase.auth.onAuthStateChange(
         async (event, session) => {
@@ -180,6 +217,8 @@ const Dashboard = () => {
             setTransactions([]);
             setUserIdentifier(null);
             setUserPhoneE164(null);
+            setIdentifierField("user");
+            setIsAdmin(false);
             navigate("/auth");
             return;
           }
@@ -187,8 +226,7 @@ const Dashboard = () => {
           if (session?.user) {
             setUser(session.user);
             try {
-              const newIdentifier = await resolveUserIdentifier(session.user);
-              await fetchTransactions(newIdentifier);
+              await initializeUserContext(session.user);
             } catch (identifierError: any) {
               console.error("Error resolving identifier:", identifierError);
               toast({
@@ -214,13 +252,14 @@ const Dashboard = () => {
         setTransactions([]);
         setUserIdentifier(null);
         setUserPhoneE164(null);
+        setIdentifierField("user");
       } else {
         navigate("/auth");
       }
     } finally {
       setLoading(false);
     }
-  }, [fetchTransactions, navigate, resolveUserIdentifier, toast]);
+  }, [initializeUserContext, navigate, toast]);
 
   useEffect(() => {
     const cleanupPromise = checkAuth();
@@ -237,7 +276,17 @@ const Dashboard = () => {
   }, [checkAuth]);
 
   const handleCreateTransaction = async (values: TransactionFormValues) => {
-    if (!user || !userIdentifier) {
+    if (!user) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
+
+    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    if (!identifierValue) {
       toast({
         variant: "destructive",
         title: "Vínculo ausente",
@@ -259,9 +308,7 @@ const Dashboard = () => {
     setCreateLoading(true);
 
     try {
-      const payload = {
-        user: userIdentifier,
-        phone_e164: userPhoneE164,
+      const payload: Record<string, any> = {
         estabelecimento: values.estabelecimento.trim(),
         valor: Math.abs(parsedValue),
         tipo: values.tipo,
@@ -270,10 +317,22 @@ const Dashboard = () => {
         detalhes: values.detalhes.trim() ? values.detalhes.trim() : null,
       };
 
+      if (identifierField === "user") {
+        payload.user = identifierValue;
+        payload.user_id = user.id;
+        if (userPhoneE164) {
+          payload.phone_e164 = userPhoneE164;
+        }
+      } else {
+        payload.user_id = identifierValue;
+      }
+
       const { data, error } = await supabase
         .from("transacoes")
         .insert([payload])
-        .select("id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria")
+        .select(
+          "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+        )
         .single();
 
       if (error) throw error;
@@ -299,7 +358,17 @@ const Dashboard = () => {
   };
 
   const handleUpdateTransaction = async (values: TransactionFormValues) => {
-    if (!user || !editTransaction || !userIdentifier) {
+    if (!user || !editTransaction) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
+
+    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    if (!identifierValue) {
       toast({
         variant: "destructive",
         title: "Vínculo ausente",
@@ -334,8 +403,10 @@ const Dashboard = () => {
         .from("transacoes")
         .update(payload)
         .eq("id", editTransaction.id)
-        .eq("user", userIdentifier)
-        .select("id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria")
+        .eq(identifierField, identifierValue)
+        .select(
+          "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+        )
         .single();
 
       if (error) throw error;
@@ -366,7 +437,17 @@ const Dashboard = () => {
   };
 
   const handleDeleteTransaction = async (transaction: Transaction) => {
-    if (!user || !userIdentifier) {
+    if (!user) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
+
+    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    if (!identifierValue) {
       toast({
         variant: "destructive",
         title: "Vínculo ausente",
@@ -385,7 +466,7 @@ const Dashboard = () => {
         .from("transacoes")
         .delete()
         .eq("id", transaction.id)
-        .eq("user", userIdentifier);
+        .eq(identifierField, identifierValue);
 
       if (error) throw error;
 
@@ -500,7 +581,17 @@ const Dashboard = () => {
   };
 
   const handleResetCurrentMonth = async () => {
-    if (!userIdentifier) {
+    if (!user) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
+
+    const identifierValue = identifierField === "user" ? userIdentifier : user.id;
+    if (!identifierValue) {
       toast({
         variant: "destructive",
         title: "Vínculo ausente",
@@ -533,7 +624,7 @@ const Dashboard = () => {
       const { error } = await supabase
         .from("transacoes")
         .delete()
-        .eq("user", userIdentifier)
+        .eq(identifierField, identifierValue)
         .gte("quando", start.toISOString())
         .lt("quando", endExclusive.toISOString());
 
@@ -610,11 +701,12 @@ const Dashboard = () => {
           </div>
         </div>
 
-        {!userIdentifier && (
+        {!userIdentifier && isAdmin && (
           <Alert variant="destructive" className="bg-destructive/10 border-destructive/40">
             <AlertTitle>Telefone não vinculado</AlertTitle>
             <AlertDescription>
-              Conecte o seu número do WhatsApp à conta para visualizar e cadastrar transações. Cadastre o vínculo na tabela
+              Apenas administradores precisam conectar um número do WhatsApp para sincronizar transações. Cadastre o vínculo na
+              tabela{" "}
               <code className="mx-1 rounded bg-muted px-1 py-0.5">whatsapp_links</code> ou solicite ao administrador.
             </AlertDescription>
           </Alert>

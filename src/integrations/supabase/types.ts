@@ -49,7 +49,7 @@ export type Database = {
           phone_e164: string | null
           quando: string
           tipo: string | null
-          user: string
+          user_id: string
           valor: number | null
         }
         Insert: {
@@ -61,7 +61,7 @@ export type Database = {
           phone_e164?: string | null
           quando: string
           tipo?: string | null
-          user: string
+          user_id: string
           valor?: number | null
         }
         Update: {
@@ -73,7 +73,7 @@ export type Database = {
           phone_e164?: string | null
           quando?: string
           tipo?: string | null
-          user?: string
+          user_id?: string
           valor?: number | null
         }
         Relationships: []

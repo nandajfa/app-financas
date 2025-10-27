@@ -16,7 +16,7 @@ export interface Transaction {
   id: string;
   created_at: string;
   quando: string;
-  user: string;
+  user_id: string;
   estabelecimento: string;
   valor: number;
   detalhes: string | null;
@@ -39,7 +39,7 @@ const Dashboard = () => {
     id: t.id,
     created_at: t.created_at ?? new Date().toISOString(),
     quando: t.quando,
-    user: t.user,
+    user_id: t.user_id,
     estabelecimento: t.estabelecimento ?? "",
     valor: typeof t.valor === "number" ? t.valor : Number(t.valor ?? 0),
     detalhes: t.detalhes ?? null,
@@ -52,8 +52,8 @@ const Dashboard = () => {
       try {
         const { data, error } = await supabase
           .from("transacoes")
-          .select("id, created_at, quando, user, estabelecimento, valor, detalhes, tipo, categoria")
-          .eq("user", userId)
+          .select("id, created_at, quando, user_id, estabelecimento, valor, detalhes, tipo, categoria")
+          .eq("user_id", userId)
           .order("quando", { ascending: false });
 
         if (error) throw error;
@@ -146,7 +146,7 @@ const Dashboard = () => {
 
     try {
       const payload = {
-        user: user.id,
+        user_id: user.id,
         estabelecimento: values.estabelecimento.trim(),
         valor: Math.abs(parsedValue),
         tipo: values.tipo,
@@ -158,7 +158,7 @@ const Dashboard = () => {
       const { data, error } = await supabase
         .from("transacoes")
         .insert([payload])
-        .select("id, created_at, quando, user, estabelecimento, valor, detalhes, tipo, categoria")
+        .select("id, created_at, quando, user_id, estabelecimento, valor, detalhes, tipo, categoria")
         .single();
 
       if (error) throw error;
@@ -212,8 +212,8 @@ const Dashboard = () => {
         .from("transacoes")
         .update(payload)
         .eq("id", editTransaction.id)
-        .eq("user", user.id)
-        .select("id, created_at, quando, user, estabelecimento, valor, detalhes, tipo, categoria")
+        .eq("user_id", user.id)
+        .select("id, created_at, quando, user_id, estabelecimento, valor, detalhes, tipo, categoria")
         .single();
 
       if (error) throw error;
@@ -256,7 +256,7 @@ const Dashboard = () => {
         .from("transacoes")
         .delete()
         .eq("id", transaction.id)
-        .eq("user", user.id);
+        .eq("user_id", user.id);
 
       if (error) throw error;
 

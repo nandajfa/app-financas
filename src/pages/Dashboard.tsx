@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { User } from "@supabase/supabase-js";
@@ -11,18 +11,70 @@ import MonthlySummary from "@/components/dashboard/MonthlySummary";
 import { Loader2 } from "lucide-react";
 import TransactionForm, { TransactionFormValues } from "@/components/dashboard/TransactionForm";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { addMonths, isWithinInterval, startOfMonth } from "date-fns";
 
 export interface Transaction {
   id: string;
   created_at: string;
   quando: string;
-  user_id: string;
+  user: string | null;
   estabelecimento: string;
   valor: number;
   detalhes: string | null;
   tipo: "receita" | "despesa";
   categoria: string;
+  phone_e164?: string | null;
 }
+
+const parseQuandoToDate = (value: unknown): Date | null => {
+  if (value == null) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "number") {
+    const millis = String(Math.trunc(value)).length === 13 ? value : value * 1000;
+    const parsed = new Date(millis);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (/^\d+$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      const millis = trimmed.length === 13 ? numeric : numeric * 1000;
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
+};
+
+const normalizeJidToPhone = (identifier: string | null | undefined): string | null => {
+  if (!identifier) return null;
+
+  const jid = identifier.trim();
+  if (!jid) return null;
+
+  const withoutSuffix = jid.replace(/@.*$/, "");
+  const digits = withoutSuffix.replace(/\D/g, "");
+  if (!digits) return null;
+
+  return digits.startsWith("+") ? digits : `+${digits}`;
+};
 
 const Dashboard = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -32,6 +84,9 @@ const Dashboard = () => {
   const [editLoading, setEditLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [editTransaction, setEditTransaction] = useState<Transaction | null>(null);
+  const [userIdentifier, setUserIdentifier] = useState<string | null>(null);
+  const [userPhoneE164, setUserPhoneE164] = useState<string | null>(null);
+  const [resetLoading, setResetLoading] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -39,21 +94,22 @@ const Dashboard = () => {
     id: t.id,
     created_at: t.created_at ?? new Date().toISOString(),
     quando: t.quando,
-    user_id: t.user_id,
+    user: t.user ?? t.user_id ?? null,
     estabelecimento: t.estabelecimento ?? "",
     valor: typeof t.valor === "number" ? t.valor : Number(t.valor ?? 0),
     detalhes: t.detalhes ?? null,
     tipo: t.tipo === "receita" ? "receita" : "despesa",
     categoria: t.categoria ?? "",
+    phone_e164: t.phone_e164 ?? null,
   }), []);
 
   const fetchTransactions = useCallback(
-    async (userId: string) => {
+    async (identifier: string) => {
       try {
         const { data, error } = await supabase
           .from("transacoes")
-          .select("id, created_at, quando, user_id, estabelecimento, valor, detalhes, tipo, categoria")
-          .eq("user_id", userId)
+          .select("id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria")
+          .eq("user", identifier)
           .order("quando", { ascending: false });
 
         if (error) throw error;
@@ -72,6 +128,37 @@ const Dashboard = () => {
     [normalizeTransaction, toast]
   );
 
+  const resolveUserIdentifier = useCallback(
+    async (currentUser: User) => {
+      const { data, error } = await supabase
+        .from("whatsapp_links")
+        .select("whatsapp_jid")
+        .eq("user_id", currentUser.id)
+        .limit(1);
+
+      if (error) {
+        throw error;
+      }
+
+      const linkedJid = data?.[0]?.whatsapp_jid
+        ?? (typeof currentUser.user_metadata?.whatsapp_jid === "string"
+          ? currentUser.user_metadata.whatsapp_jid
+          : null);
+
+      if (!linkedJid) {
+        throw new Error(
+          "Nenhum telefone do WhatsApp está vinculado a esta conta. Cadastre o vínculo para visualizar suas transações."
+        );
+      }
+
+      setUserIdentifier(linkedJid);
+      setUserPhoneE164(normalizeJidToPhone(linkedJid));
+
+      return linkedJid;
+    },
+    []
+  );
+
   const checkAuth = useCallback(async () => {
     setLoading(true);
     try {
@@ -83,20 +170,33 @@ const Dashboard = () => {
       }
 
       setUser(session.user);
-      await fetchTransactions(session.user.id);
+      const identifier = await resolveUserIdentifier(session.user);
+      await fetchTransactions(identifier);
 
       const { data: authListener } = supabase.auth.onAuthStateChange(
         async (event, session) => {
           if (event === "SIGNED_OUT") {
             setUser(null);
             setTransactions([]);
+            setUserIdentifier(null);
+            setUserPhoneE164(null);
             navigate("/auth");
             return;
           }
 
           if (session?.user) {
             setUser(session.user);
-            await fetchTransactions(session.user.id);
+            try {
+              const newIdentifier = await resolveUserIdentifier(session.user);
+              await fetchTransactions(newIdentifier);
+            } catch (identifierError: any) {
+              console.error("Error resolving identifier:", identifierError);
+              toast({
+                variant: "destructive",
+                title: "Erro",
+                description: identifierError.message,
+              });
+            }
           }
         }
       );
@@ -109,11 +209,18 @@ const Dashboard = () => {
         title: "Erro",
         description: error.message,
       });
-      navigate("/auth");
+
+      if (typeof error?.message === "string" && error.message.includes("WhatsApp")) {
+        setTransactions([]);
+        setUserIdentifier(null);
+        setUserPhoneE164(null);
+      } else {
+        navigate("/auth");
+      }
     } finally {
       setLoading(false);
     }
-  }, [fetchTransactions, navigate, toast]);
+  }, [fetchTransactions, navigate, resolveUserIdentifier, toast]);
 
   useEffect(() => {
     const cleanupPromise = checkAuth();
@@ -130,7 +237,14 @@ const Dashboard = () => {
   }, [checkAuth]);
 
   const handleCreateTransaction = async (values: TransactionFormValues) => {
-    if (!user) return;
+    if (!user || !userIdentifier) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
 
     const parsedValue = Number(values.valor);
     if (!Number.isFinite(parsedValue)) {
@@ -146,7 +260,8 @@ const Dashboard = () => {
 
     try {
       const payload = {
-        user_id: user.id,
+        user: userIdentifier,
+        phone_e164: userPhoneE164,
         estabelecimento: values.estabelecimento.trim(),
         valor: Math.abs(parsedValue),
         tipo: values.tipo,
@@ -158,7 +273,7 @@ const Dashboard = () => {
       const { data, error } = await supabase
         .from("transacoes")
         .insert([payload])
-        .select("id, created_at, quando, user_id, estabelecimento, valor, detalhes, tipo, categoria")
+        .select("id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria")
         .single();
 
       if (error) throw error;
@@ -184,7 +299,14 @@ const Dashboard = () => {
   };
 
   const handleUpdateTransaction = async (values: TransactionFormValues) => {
-    if (!user || !editTransaction) return;
+    if (!user || !editTransaction || !userIdentifier) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
 
     const parsedValue = Number(values.valor);
     if (!Number.isFinite(parsedValue)) {
@@ -212,8 +334,8 @@ const Dashboard = () => {
         .from("transacoes")
         .update(payload)
         .eq("id", editTransaction.id)
-        .eq("user_id", user.id)
-        .select("id, created_at, quando, user_id, estabelecimento, valor, detalhes, tipo, categoria")
+        .eq("user", userIdentifier)
+        .select("id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria")
         .single();
 
       if (error) throw error;
@@ -244,7 +366,14 @@ const Dashboard = () => {
   };
 
   const handleDeleteTransaction = async (transaction: Transaction) => {
-    if (!user) return;
+    if (!user || !userIdentifier) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
 
     const confirmDelete = window.confirm("Deseja realmente excluir esta transação?");
     if (!confirmDelete) return;
@@ -256,7 +385,7 @@ const Dashboard = () => {
         .from("transacoes")
         .delete()
         .eq("id", transaction.id)
-        .eq("user_id", user.id);
+        .eq("user", userIdentifier);
 
       if (error) throw error;
 
@@ -282,6 +411,161 @@ const Dashboard = () => {
     navigate("/auth");
   };
 
+  const currentMonthRange = useMemo(() => {
+    const start = startOfMonth(new Date());
+    const endExclusive = addMonths(start, 1);
+    return { start, endExclusive };
+  }, []);
+
+  const currentMonthTransactions = useMemo(() => {
+    return transactions.filter((transaction) => {
+      const date = parseQuandoToDate(transaction.quando);
+      if (!date) return false;
+
+      return isWithinInterval(date, {
+        start: currentMonthRange.start,
+        end: new Date(currentMonthRange.endExclusive.getTime() - 1),
+      });
+    });
+  }, [currentMonthRange.endExclusive, currentMonthRange.start, transactions]);
+
+  const hasMonthlyTransactions = currentMonthTransactions.length > 0;
+
+  const handleExportCurrentMonth = () => {
+    if (!hasMonthlyTransactions) {
+      toast({
+        variant: "destructive",
+        title: "Nada para exportar",
+        description: "Nenhuma transação encontrada para o mês atual.",
+      });
+      return;
+    }
+
+    const header = [
+      "ID",
+      "Data de criação",
+      "Quando",
+      "Estabelecimento",
+      "Valor",
+      "Tipo",
+      "Categoria",
+      "Detalhes",
+      "Identificador",
+      "Telefone",
+    ];
+
+    const rows = currentMonthTransactions.map((transaction) => [
+      transaction.id,
+      transaction.created_at,
+      transaction.quando,
+      transaction.estabelecimento,
+      transaction.valor,
+      transaction.tipo,
+      transaction.categoria,
+      transaction.detalhes ?? "",
+      transaction.user ?? "",
+      transaction.phone_e164 ?? "",
+    ]);
+
+    const csvContent = [header, ...rows]
+      .map((columns) =>
+        columns
+          .map((value) => {
+            const cell = value == null ? "" : String(value);
+            if (cell.includes("\"") || cell.includes(";") || cell.includes(",") || cell.includes("\n")) {
+              return `"${cell.replace(/"/g, '""')}"`;
+            }
+            return cell;
+          })
+          .join(";")
+      )
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    link.href = url;
+    link.download = `transacoes-${now.getFullYear()}-${month}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: "Exportação concluída",
+      description: "As transações do mês foram exportadas em CSV.",
+    });
+  };
+
+  const handleResetCurrentMonth = async () => {
+    if (!userIdentifier) {
+      toast({
+        variant: "destructive",
+        title: "Vínculo ausente",
+        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+      });
+      return;
+    }
+
+    if (!hasMonthlyTransactions) {
+      toast({
+        variant: "destructive",
+        title: "Nenhuma transação",
+        description: "Não há transações para remover no mês atual.",
+      });
+      return;
+    }
+
+    const confirmReset = window.confirm(
+      "Tem certeza de que deseja remover todas as transações do mês atual? Esta ação não pode ser desfeita."
+    );
+
+    if (!confirmReset) {
+      return;
+    }
+
+    setResetLoading(true);
+
+    try {
+      const { start, endExclusive } = currentMonthRange;
+      const { error } = await supabase
+        .from("transacoes")
+        .delete()
+        .eq("user", userIdentifier)
+        .gte("quando", start.toISOString())
+        .lt("quando", endExclusive.toISOString());
+
+      if (error) throw error;
+
+      setTransactions((prev) =>
+        prev.filter((transaction) => {
+          const date = parseQuandoToDate(transaction.quando);
+          if (!date) return true;
+          return !isWithinInterval(date, {
+            start,
+            end: new Date(endExclusive.getTime() - 1),
+          });
+        })
+      );
+
+      toast({
+        title: "Mês reiniciado",
+        description: "As transações do mês atual foram removidas.",
+      });
+    } catch (error: any) {
+      console.error("Error resetting month:", error);
+      toast({
+        variant: "destructive",
+        title: "Erro ao resetar",
+        description: error.message,
+      });
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -299,6 +583,43 @@ const Dashboard = () => {
 
         <MonthlySummary transactions={transactions} />
 
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between bg-card border border-border rounded-xl shadow-card p-6">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">Gerenciar transações do mês</h2>
+            <p className="text-sm text-muted-foreground">
+              Exporte suas transações atuais ou limpe o mês para começar um novo período.
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleExportCurrentMonth}
+              disabled={!hasMonthlyTransactions}
+            >
+              Exportar mês em CSV
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleResetCurrentMonth}
+              disabled={resetLoading || !hasMonthlyTransactions}
+            >
+              {resetLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Resetar mês"}
+            </Button>
+          </div>
+        </div>
+
+        {!userIdentifier && (
+          <Alert variant="destructive" className="bg-destructive/10 border-destructive/40">
+            <AlertTitle>Telefone não vinculado</AlertTitle>
+            <AlertDescription>
+              Conecte o seu número do WhatsApp à conta para visualizar e cadastrar transações. Cadastre o vínculo na tabela
+              <code className="mx-1 rounded bg-muted px-1 py-0.5">whatsapp_links</code> ou solicite ao administrador.
+            </AlertDescription>
+          </Alert>
+        )}
+
         <div className="grid grid-cols-1 gap-8">
           <div className="bg-card border border-border rounded-xl shadow-card p-6">
             <TransactionForm
@@ -311,18 +632,18 @@ const Dashboard = () => {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
-  <div className="lg:col-span-2">
-    <TransactionsList
-      transactions={transactions}
-      onEdit={(transaction) => setEditTransaction(transaction)}
-      onDelete={handleDeleteTransaction}
-      deletingId={deletingId}
-    />
-  </div>
-  <div className="lg:col-span-1 self-start">
-    <CategoryChart transactions={transactions} />
-  </div>
-</div>
+          <div className="lg:col-span-2">
+            <TransactionsList
+              transactions={transactions}
+              onEdit={(transaction) => setEditTransaction(transaction)}
+              onDelete={handleDeleteTransaction}
+              deletingId={deletingId}
+            />
+          </div>
+          <div className="lg:col-span-1 self-start">
+            <CategoryChart transactions={transactions} />
+          </div>
+        </div>
       </main>
 
       <Dialog open={!!editTransaction} onOpenChange={(open) => !open && setEditTransaction(null)}>

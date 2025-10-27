@@ -54,10 +54,13 @@ export default function MonthlySummary({ transactions }: Props) {
   let totalDespesas = 0;
 
   for (const t of transactions ?? []) {
-	const v = Number(t.valor);
-	if (!Number.isFinite(v)) continue;
-	if (t.tipo === "receita") totalReceitas += Math.abs(v);
-	else if (t.tipo === "despesa") totalDespesas += Math.abs(v);
+    const quando = parseQuando(t.quando);
+    if (!quando || !isWithinInterval(quando, range)) continue;
+
+    const v = Number(t.valor);
+    if (!Number.isFinite(v)) continue;
+    if (t.tipo === "receita") totalReceitas += Math.abs(v);
+    else if (t.tipo === "despesa") totalDespesas += Math.abs(v);
   }
 
   const saldo = totalReceitas - totalDespesas;

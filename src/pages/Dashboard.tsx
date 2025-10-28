@@ -20,6 +20,7 @@ export interface Transaction {
   created_at: string;
   quando: string;
   user: string | null;
+  user_id?: string | null;
   estabelecimento: string;
   valor: number;
   detalhes: string | null;
@@ -76,6 +77,23 @@ const normalizeJidToPhone = (identifier: string | null | undefined): string | nu
   return digits.startsWith("+") ? digits : `+${digits}`;
 };
 
+const sanitizeFilterValue = (value: string) => value.replace(/,/g, "\\,");
+
+const buildOwnershipFilters = (
+  userId: string,
+  identifier?: string | null,
+  phone?: string | null
+) => {
+  const filters = [`user_id.eq.${userId}`];
+  if (identifier && identifier.trim()) {
+    filters.push(`user.eq.${sanitizeFilterValue(identifier)}`);
+  }
+  if (phone && phone.trim()) {
+    filters.push(`phone_e164.eq.${sanitizeFilterValue(phone)}`);
+  }
+  return filters;
+};
+
 const Dashboard = () => {
   const [user, setUser] = useState<User | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -95,7 +113,8 @@ const Dashboard = () => {
     id: t.id,
     created_at: t.created_at ?? new Date().toISOString(),
     quando: t.quando,
-    user: t.user ?? t.user_id ?? null,
+    user: t.user ?? null,
+    user_id: t.user_id ?? null,
     estabelecimento: t.estabelecimento ?? "",
     valor: typeof t.valor === "number" ? t.valor : Number(t.valor ?? 0),
     detalhes: t.detalhes ?? null,
@@ -105,15 +124,31 @@ const Dashboard = () => {
   }), []);
 
   const fetchTransactions = useCallback(
-    async (identifier: string) => {
+    async ({
+      userId,
+      identifier,
+      phone,
+    }: {
+      userId: string;
+      identifier?: string | null;
+      phone?: string | null;
+    }) => {
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from("transacoes")
           .select(
-            "id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+            "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
           )
-          .eq("user", identifier)
           .order("quando", { ascending: false });
+
+        const filters = buildOwnershipFilters(userId, identifier, phone);
+        if (filters.length > 1) {
+          query = query.or(filters.join(","));
+        } else {
+          query = query.eq("user_id", userId);
+        }
+
+        const { data, error } = await query;
 
         if (error) throw error;
 
@@ -143,21 +178,27 @@ const Dashboard = () => {
         throw error;
       }
 
-      const linkedJid = data?.[0]?.whatsapp_jid
-        ?? (typeof currentUser.user_metadata?.whatsapp_jid === "string"
+      const metadataJid =
+        typeof currentUser.user_metadata?.whatsapp_jid === "string"
           ? currentUser.user_metadata.whatsapp_jid
-          : null);
+          : null;
+      const linkedJid = data?.[0]?.whatsapp_jid ?? metadataJid ?? null;
 
-      if (!linkedJid) {
-        throw new Error(
-          "Nenhum telefone do WhatsApp está vinculado a esta conta. Cadastre o vínculo para visualizar suas transações."
-        );
-      }
+      const metadataPhone =
+        typeof currentUser.user_metadata?.phone_e164 === "string"
+          ? currentUser.user_metadata.phone_e164
+          : null;
+      const normalizedPhone = linkedJid
+        ? normalizeJidToPhone(linkedJid)
+        : metadataPhone;
 
       setUserIdentifier(linkedJid);
-      setUserPhoneE164(normalizeJidToPhone(linkedJid));
+      setUserPhoneE164(normalizedPhone ?? null);
 
-      return linkedJid;
+      return {
+        identifier: linkedJid,
+        phone: normalizedPhone ?? null,
+      };
     },
     []
   );
@@ -180,8 +221,12 @@ const Dashboard = () => {
       const userIsAdmin = await fetchIsAdmin(currentUser);
       setIsAdmin(userIsAdmin);
 
-      const identifier = await resolveUserIdentifier(currentUser);
-      await fetchTransactions(identifier);
+      const { identifier, phone } = await resolveUserIdentifier(currentUser);
+      await fetchTransactions({
+        userId: currentUser.id,
+        identifier,
+        phone,
+      });
     },
     [fetchIsAdmin, fetchTransactions, resolveUserIdentifier]
   );
@@ -266,18 +311,8 @@ const Dashboard = () => {
     if (!user) {
       toast({
         variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
-      });
-      return;
-    }
-
-    const identifierValue = userIdentifier;
-    if (!identifierValue) {
-      toast({
-        variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+        title: "Sessão inválida",
+        description: "Faça login novamente para continuar.",
       });
       return;
     }
@@ -304,16 +339,20 @@ const Dashboard = () => {
         detalhes: values.detalhes.trim() ? values.detalhes.trim() : null,
       };
 
-      payload.user = identifierValue;
-      if (userPhoneE164) {
-        payload.phone_e164 = userPhoneE164;
+      payload.user_id = user.id;
+      if (userIdentifier) {
+        payload.user = userIdentifier;
+      }
+      const phoneForPayload = userPhoneE164 ?? (userIdentifier ? normalizeJidToPhone(userIdentifier) : null);
+      if (phoneForPayload) {
+        payload.phone_e164 = phoneForPayload;
       }
 
       const { data, error } = await supabase
         .from("transacoes")
         .insert([payload])
         .select(
-          "id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+          "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
         )
         .single();
 
@@ -343,18 +382,8 @@ const Dashboard = () => {
     if (!user || !editTransaction) {
       toast({
         variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
-      });
-      return;
-    }
-
-    const identifierValue = userIdentifier;
-    if (!identifierValue) {
-      toast({
-        variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+        title: "Ação indisponível",
+        description: "Não foi possível identificar a transação selecionada.",
       });
       return;
     }
@@ -372,7 +401,7 @@ const Dashboard = () => {
     setEditLoading(true);
 
     try {
-      const payload = {
+      const payload: Record<string, any> = {
         estabelecimento: values.estabelecimento.trim(),
         valor: Math.abs(parsedValue),
         tipo: values.tipo,
@@ -381,15 +410,31 @@ const Dashboard = () => {
         detalhes: values.detalhes.trim() ? values.detalhes.trim() : null,
       };
 
-      const { data, error } = await supabase
+      payload.user_id = user.id;
+      if (userIdentifier) {
+        payload.user = userIdentifier;
+      }
+      const phoneForPayload = userPhoneE164 ?? (userIdentifier ? normalizeJidToPhone(userIdentifier) : null);
+      if (phoneForPayload) {
+        payload.phone_e164 = phoneForPayload;
+      }
+
+      let query = supabase
         .from("transacoes")
         .update(payload)
         .eq("id", editTransaction.id)
-        .eq("user", identifierValue)
         .select(
-          "id, created_at, quando, user, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
-        )
-        .single();
+          "id, created_at, quando, user, user_id, phone_e164, estabelecimento, valor, detalhes, tipo, categoria"
+        );
+
+      const filters = buildOwnershipFilters(user.id, userIdentifier, userPhoneE164);
+      if (filters.length > 1) {
+        query = query.or(filters.join(","));
+      } else {
+        query = query.eq("user_id", user.id);
+      }
+
+      const { data, error } = await query.single();
 
       if (error) throw error;
 
@@ -422,18 +467,8 @@ const Dashboard = () => {
     if (!user) {
       toast({
         variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
-      });
-      return;
-    }
-
-    const identifierValue = userIdentifier;
-    if (!identifierValue) {
-      toast({
-        variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+        title: "Sessão inválida",
+        description: "Faça login novamente para continuar.",
       });
       return;
     }
@@ -444,11 +479,19 @@ const Dashboard = () => {
     setDeletingId(transaction.id);
 
     try {
-      const { error } = await supabase
+      let query = supabase
         .from("transacoes")
         .delete()
-        .eq("id", transaction.id)
-        .eq("user", identifierValue);
+        .eq("id", transaction.id);
+
+      const filters = buildOwnershipFilters(user.id, userIdentifier, userPhoneE164);
+      if (filters.length > 1) {
+        query = query.or(filters.join(","));
+      } else {
+        query = query.eq("user_id", user.id);
+      }
+
+      const { error } = await query;
 
       if (error) throw error;
 
@@ -566,18 +609,8 @@ const Dashboard = () => {
     if (!user) {
       toast({
         variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
-      });
-      return;
-    }
-
-    const identifierValue = userIdentifier;
-    if (!identifierValue) {
-      toast({
-        variant: "destructive",
-        title: "Vínculo ausente",
-        description: "Não foi possível identificar o telefone vinculado ao usuário.",
+        title: "Sessão inválida",
+        description: "Faça login novamente para continuar.",
       });
       return;
     }
@@ -603,12 +636,20 @@ const Dashboard = () => {
 
     try {
       const { start, endExclusive } = currentMonthRange;
-      const { error } = await supabase
+      let query = supabase
         .from("transacoes")
         .delete()
-        .eq("user", identifierValue)
         .gte("quando", start.toISOString())
         .lt("quando", endExclusive.toISOString());
+
+      const filters = buildOwnershipFilters(user.id, userIdentifier, userPhoneE164);
+      if (filters.length > 1) {
+        query = query.or(filters.join(","));
+      } else {
+        query = query.eq("user_id", user.id);
+      }
+
+      const { error } = await query;
 
       if (error) throw error;
 
